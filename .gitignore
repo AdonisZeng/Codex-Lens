@@ -137,3 +137,22 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# ============================================
+# Codex Lens Specific
+# ============================================
+
+# Codex Lens snapshots (task rollback backup)
+.codex-viewer/
+
+# Trae AI IDE internal files
+.trae/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Startup scripts (platform-specific, use npm scripts instead)
+start.bat
+update.bat
