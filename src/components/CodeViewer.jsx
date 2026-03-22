@@ -1,8 +1,9 @@
 import React, { useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { EditorView } from '@codemirror/view';
+import { EditorView, Decoration, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
+import { RangeSetBuilder } from '@codemirror/state';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { java } from '@codemirror/lang-java';
@@ -54,6 +55,72 @@ const LANG_MAP = {
 function getLanguageExtension(filePath) {
   const ext = filePath?.split('.').pop()?.toLowerCase();
   return LANG_MAP[ext] ? [LANG_MAP[ext]()] : [];
+}
+
+const addedLineDecoration = Decoration.line({
+  class: 'cm-diff-added-line',
+  attributes: { 'data-diff-type': 'added' }
+});
+
+const removedLineDecoration = Decoration.line({
+  class: 'cm-diff-removed-line',
+  attributes: { 'data-diff-type': 'removed' }
+});
+
+const addedMarkDecoration = Decoration.mark({
+  class: 'cm-diff-added-mark'
+});
+
+const removedMarkDecoration = Decoration.mark({
+  class: 'cm-diff-removed-mark'
+});
+
+function createDiffHighlightPlugin(diffData) {
+  return ViewPlugin.fromClass(class {
+    decorations;
+
+    constructor(view) {
+      this.decorations = this.buildDecorations(view, diffData);
+    }
+
+    update(update) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = this.buildDecorations(update.view, diffData);
+      }
+    }
+
+    buildDecorations(view, diff) {
+      if (!diff || diff.length === 0) {
+        return Decoration.none;
+      }
+
+      const builder = new RangeSetBuilder();
+      const doc = view.state.doc;
+
+      for (let i = 1; i <= doc.lines; i++) {
+        const line = doc.line(i);
+        const diffLine = diff[i - 1];
+
+        if (diffLine) {
+          if (diffLine.added) {
+            builder.add(line.from, line.from, addedLineDecoration);
+            if (line.length > 0) {
+              builder.add(line.from, line.from + 1, addedMarkDecoration);
+            }
+          } else if (diffLine.removed) {
+            builder.add(line.from, line.from, removedLineDecoration);
+            if (line.length > 0) {
+              builder.add(line.from, line.from + 1, removedMarkDecoration);
+            }
+          }
+        }
+      }
+
+      return builder.finish();
+    }
+  }, {
+    decorations: v => v.decorations
+  });
 }
 
 const darkTheme = EditorView.theme({
@@ -112,6 +179,20 @@ const darkTheme = EditorView.theme({
     background: 'rgba(34, 197, 94, 0.4)',
     cursor: 'grabbing',
   },
+  '.cm-diff-added-line': {
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+  },
+  '.cm-diff-added-mark': {
+    color: '#4ade80',
+    fontWeight: 'bold',
+  },
+  '.cm-diff-removed-line': {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+  },
+  '.cm-diff-removed-mark': {
+    color: '#f87171',
+    fontWeight: 'bold',
+  },
 }, { dark: true });
 
 const darkHighlightStyle = HighlightStyle.define([
@@ -151,12 +232,24 @@ export function CodeViewer({ content, diff, isDiff, filePath }) {
         showOverlay: 'always',
       })),
     ];
+
+    if (isDiff && diff && diff.length > 0) {
+      exts.push(createDiffHighlightPlugin(diff));
+    }
+
     return exts;
-  }, [filePath]);
+  }, [filePath, isDiff, diff]);
 
   const code = useMemo(() => {
     if (isDiff && diff) {
-      return diff.map(line => line.content).join('\n');
+      return diff.map(line => {
+        if (line.added) {
+          return '+' + line.content;
+        } else if (line.removed) {
+          return '-' + line.content;
+        }
+        return ' ' + line.content;
+      }).join('\n');
     }
     return content || '';
   }, [content, diff, isDiff]);
