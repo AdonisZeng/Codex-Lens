@@ -11,6 +11,8 @@ export function App() {
   const [version, setVersion] = useState(null);
   const [latestVersion, setLatestVersion] = useState(null);
   const [hasUpdate, setHasUpdate] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [saving, setSaving] = useState(false);
   const wsRef = useRef(null);
 
   useEffect(() => {
@@ -38,6 +40,10 @@ export function App() {
         setVersion(data.version);
         setLatestVersion(data.latestVersion);
         setHasUpdate(data.hasUpdate);
+        if (data.projectRoot) {
+          const parts = data.projectRoot.split(/[/\\]/);
+          setProjectName(parts[parts.length - 1] || data.projectRoot);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch status:', error);
@@ -60,6 +66,12 @@ export function App() {
         switchToPrevTab();
       } else {
         switchToNextTab();
+      }
+    } else if (e.ctrlKey && e.key === 's') {
+      e.preventDefault();
+      const activeTab = tabs.find(t => t.id === activeTabId);
+      if (activeTab && activeTab.modified) {
+        saveFile(activeTabId);
       }
     }
   }
@@ -133,8 +145,10 @@ export function App() {
           path: data.path,
           name: fileName,
           content: data.content,
+          originalContent: data.content,
           diff: data.diff || null,
-          isDiff: !!data.diff
+          isDiff: !!data.diff,
+          modified: false
         };
         setActiveTabId(newTab.id);
         return [...prevTabs, newTab];
@@ -149,7 +163,14 @@ export function App() {
       const existingTab = prevTabs.find(t => t.path === data.path);
       
       if (existingTab) {
-        const updatedTab = { ...existingTab, content: data.newContent, diff: data.diff, isDiff: true };
+        const updatedTab = { 
+          ...existingTab, 
+          content: data.newContent, 
+          originalContent: data.newContent,
+          diff: data.diff, 
+          isDiff: true,
+          modified: false
+        };
         setActiveTabId(existingTab.id);
         return prevTabs.map(t =>
           t.path === data.path ? updatedTab : t
@@ -160,13 +181,108 @@ export function App() {
           path: data.path,
           name: fileName,
           content: data.newContent,
+          originalContent: data.newContent,
           diff: data.diff,
-          isDiff: true
+          isDiff: true,
+          modified: false
         };
         setActiveTabId(newTab.id);
         return [...prevTabs, newTab];
       }
     });
+  }
+
+  function handleContentChange(tabId, newContent) {
+    setTabs(prevTabs => prevTabs.map(tab => {
+      if (tab.id === tabId) {
+        const modified = newContent !== tab.originalContent;
+        return { ...tab, content: newContent, modified };
+      }
+      return tab;
+    }));
+  }
+
+  async function saveFile(tabId) {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab || !tab.modified) return;
+
+    setSaving(true);
+    try {
+      const port = window.location.port === '5173' ? '5174' : window.location.port;
+      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+      const response = await fetch(`${protocol}//${window.location.hostname}:${port}/api/save-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: tab.path, content: tab.content })
+      });
+
+      if (response.ok) {
+        setTabs(prevTabs => prevTabs.map(t => {
+          if (t.id === tabId) {
+            return { ...t, originalContent: t.content, modified: false };
+          }
+          return t;
+        }));
+        console.log('File saved:', tab.path);
+      } else {
+        const error = await response.json();
+        console.error('Failed to save file:', error.message);
+        alert('保存失败: ' + error.message);
+      }
+    } catch (error) {
+      console.error('Failed to save file:', error);
+      alert('保存失败: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveAllFiles() {
+    const modifiedTabs = tabs.filter(t => t.modified);
+    if (modifiedTabs.length === 0) return;
+
+    setSaving(true);
+    const port = window.location.port === '5173' ? '5174' : window.location.port;
+    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+
+    let savedCount = 0;
+    let failedFiles = [];
+
+    for (const tab of modifiedTabs) {
+      try {
+        const response = await fetch(`${protocol}//${window.location.hostname}:${port}/api/save-file`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: tab.path, content: tab.content })
+        });
+
+        if (response.ok) {
+          savedCount++;
+        } else {
+          const error = await response.json();
+          failedFiles.push(tab.name);
+          console.error('Failed to save file:', tab.name, error.message);
+        }
+      } catch (error) {
+        failedFiles.push(tab.name);
+        console.error('Failed to save file:', tab.name, error);
+      }
+    }
+
+    if (savedCount > 0) {
+      setTabs(prevTabs => prevTabs.map(t => {
+        if (t.modified && !failedFiles.includes(t.name)) {
+          return { ...t, originalContent: t.content, modified: false };
+        }
+        return t;
+      }));
+    }
+
+    if (failedFiles.length > 0) {
+      alert(`以下文件保存失败: ${failedFiles.join(', ')}`);
+    }
+
+    setSaving(false);
   }
 
   function handleFileClick(path) {
@@ -181,6 +297,14 @@ export function App() {
   }
 
   function closeTab(tabId) {
+    const tab = tabs.find(t => t.id === tabId);
+    if (tab?.modified) {
+      const confirmed = window.confirm(`文件 "${tab.name}" 已修改，是否保存？`);
+      if (confirmed) {
+        saveFile(tabId);
+      }
+    }
+    
     setTabs(prev => {
       const newTabs = prev.filter(t => t.id !== tabId);
       if (activeTabId === tabId) {
@@ -192,11 +316,30 @@ export function App() {
   }
 
   function closeOtherTabs(tabId) {
-    setTabs(prev => prev.filter(t => t.id === tabId));
+    setTabs(prev => {
+      const tabsToClose = prev.filter(t => t.id !== tabId);
+      tabsToClose.forEach(t => {
+        if (t.modified) {
+          const confirmed = window.confirm(`文件 "${t.name}" 已修改，是否保存？`);
+          if (confirmed) {
+            saveFile(t.id);
+          }
+        }
+      });
+      return prev.filter(t => t.id === tabId);
+    });
     setActiveTabId(tabId);
   }
 
   function closeAllTabs() {
+    tabs.forEach(t => {
+      if (t.modified) {
+        const confirmed = window.confirm(`文件 "${t.name}" 已修改，是否保存？`);
+        if (confirmed) {
+          saveFile(t.id);
+        }
+      }
+    });
     setTabs([]);
     setActiveTabId(null);
   }
@@ -234,7 +377,7 @@ export function App() {
     <div className="app-container">
       <div className="top-bar">
         <div className="top-bar-left">
-          <span className="top-bar-title">文件浏览器</span>
+          <span className="top-bar-title">当前工作区: {projectName}</span>
         </div>
         <div className="top-bar-center">
           <button className="task-btn task-btn-clear" onClick={clearAllDiff} title="清空所有 diff 显示">
@@ -277,6 +420,7 @@ export function App() {
                 diff={activeTab.diff}
                 isDiff={activeTab.isDiff}
                 filePath={activeTab.path}
+                onChange={(value) => handleContentChange(activeTabId, value)}
               />
             )}
           </div>
@@ -285,6 +429,9 @@ export function App() {
           <ContextMenu
             x={contextMenu.x}
             y={contextMenu.y}
+            tab={tabs.find(t => t.id === contextMenu.tabId)}
+            tabs={tabs}
+            saving={saving}
             onClose={() => setContextMenu(null)}
             onCloseTab={() => {
               closeTab(contextMenu.tabId);
@@ -296,6 +443,14 @@ export function App() {
             }}
             onCloseAllTabs={() => {
               closeAllTabs();
+              setContextMenu(null);
+            }}
+            onSave={() => {
+              saveFile(contextMenu.tabId);
+              setContextMenu(null);
+            }}
+            onSaveAll={() => {
+              saveAllFiles();
               setContextMenu(null);
             }}
           />
@@ -316,11 +471,14 @@ function TabBar({ tabs, activeTabId, onTabClick, onTabClose, onContextMenu }) {
       {tabs.map(tab => (
         <div
           key={tab.id}
-          className={`tab ${activeTabId === tab.id ? 'active' : ''}`}
+          className={`tab ${activeTabId === tab.id ? 'active' : ''} ${tab.modified ? 'modified' : ''}`}
           onClick={() => onTabClick(tab.id)}
           onContextMenu={(e) => onContextMenu(e, tab.id)}
         >
-          <span className="tab-name">{tab.name}</span>
+          <span className="tab-name">
+            {tab.modified && <span className="tab-modified-mark">●</span>}
+            {tab.name}
+          </span>
           <button
             className="tab-close"
             onClick={(e) => {
@@ -336,9 +494,21 @@ function TabBar({ tabs, activeTabId, onTabClick, onTabClose, onContextMenu }) {
   );
 }
 
-function ContextMenu({ x, y, onClose, onCloseTab, onCloseOtherTabs, onCloseAllTabs }) {
+function ContextMenu({ x, y, tab, tabs, saving, onClose, onCloseTab, onCloseOtherTabs, onCloseAllTabs, onSave, onSaveAll }) {
+  const hasModified = tabs?.some(t => t.modified);
+  
   return (
     <div className="context-menu" style={{ left: x, top: y }} onClick={(e) => e.stopPropagation()}>
+      {tab?.modified && (
+        <div className="context-menu-item" onClick={onSave} style={{ color: '#4ade80' }}>
+          {saving ? '保存中...' : '保存'}
+        </div>
+      )}
+      {hasModified && (
+        <div className="context-menu-item" onClick={onSaveAll} style={{ color: '#4ade80' }}>
+          {saving ? '保存中...' : '全部保存'}
+        </div>
+      )}
       <div className="context-menu-item" onClick={onCloseTab}>关闭</div>
       <div className="context-menu-item" onClick={onCloseOtherTabs}>关闭其他</div>
       <div className="context-menu-item" onClick={onCloseAllTabs}>关闭所有</div>

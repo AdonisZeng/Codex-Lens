@@ -376,6 +376,16 @@ body {
   opacity: 1;
 }
 
+.tab.modified .tab-name {
+  color: var(--accent-color);
+}
+
+.tab-modified-mark {
+  color: var(--accent-color);
+  margin-right: 4px;
+  font-size: 10px;
+}
+
 .context-menu {
   position: fixed;
   background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);

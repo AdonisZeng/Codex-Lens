@@ -9,7 +9,7 @@ import { createLogger } from './lib/logger.js';
 import { spawnCodex, writeToPty, resizePty, killPty, onPtyData, onPtyExit, getPtyState, getOutputBuffer } from './pty-manager.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync } from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,7 +76,8 @@ class Aggregator {
           codexRunning: !!this.ptyProcess,
           version: current,
           latestVersion: latestVersion,
-          hasUpdate: latestVersion && latestVersion !== current
+          hasUpdate: latestVersion && latestVersion !== current,
+          projectRoot: this.projectRoot
         });
       } else {
         next();
@@ -104,6 +105,25 @@ class Aggregator {
 
       spawn(command, [filePath], { detached: true, stdio: 'ignore' });
       res.json({ success: true });
+    });
+
+    app.post('/api/save-file', (req, res) => {
+      const { path: filePath, content } = req.body;
+      if (!filePath) {
+        return res.status(400).json({ error: 'Path is required' });
+      }
+      if (content === undefined) {
+        return res.status(400).json({ error: 'Content is required' });
+      }
+
+      try {
+        writeFileSync(filePath, content, 'utf-8');
+        logger.info(`File saved: ${filePath}`);
+        res.json({ success: true, path: filePath });
+      } catch (error) {
+        logger.error(`Failed to save file: ${error.message}`);
+        res.status(500).json({ error: error.message });
+      }
     });
 
     await new Promise((resolve) => {

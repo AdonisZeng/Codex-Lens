@@ -215,7 +215,7 @@ const darkHighlightStyle = HighlightStyle.define([
 
 const syntaxTheme = syntaxHighlighting(darkHighlightStyle);
 
-export function CodeViewer({ content, diff, isDiff, filePath }) {
+export function CodeViewer({ content, diff, isDiff, filePath, onChange }) {
   const editorRef = useRef(null);
 
   const extensions = useMemo(() => {
@@ -254,6 +254,14 @@ export function CodeViewer({ content, diff, isDiff, filePath }) {
     return content || '';
   }, [content, diff, isDiff]);
 
+  const editable = !isDiff;
+
+  function handleChange(value) {
+    if (onChange && editable) {
+      onChange(value);
+    }
+  }
+
   return (
     <div className="code-viewer-codemirror">
       <CodeMirror
@@ -261,7 +269,8 @@ export function CodeViewer({ content, diff, isDiff, filePath }) {
         height="100%"
         theme={darkTheme}
         extensions={extensions}
-        editable={false}
+        editable={editable}
+        onChange={handleChange}
         basicSetup={{
           lineNumbers: true,
           foldGutter: false,
