@@ -81,6 +81,23 @@ class FileWatcher {
     this.wsEmitter = wsEmitter;
     this.watcher = null;
     this.fileContents = new Map();
+    this.gitStatusCallback = null;
+    this._gitStatusTimeout = null;
+  }
+
+  setGitStatusCallback(callback) {
+    this.gitStatusCallback = callback;
+  }
+
+  _scheduleGitStatusUpdate(filePath) {
+    if (this.gitStatusCallback) {
+      if (this._gitStatusTimeout) {
+        clearTimeout(this._gitStatusTimeout);
+      }
+      this._gitStatusTimeout = setTimeout(() => {
+        this.gitStatusCallback(filePath);
+      }, 500);
+    }
   }
 
   async start() {
@@ -161,6 +178,9 @@ class FileWatcher {
 
         this.emitFileChange(filePath, newContent, diff);
       }
+
+      // Schedule git status update if git is available
+      this._scheduleGitStatusUpdate(filePath);
     } catch (error) {
       logger.errorWithStack(`Error handling file change: ${filePath}`, error);
     }

@@ -1,4 +1,4 @@
-import React from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -15,42 +15,66 @@ const VIRTUAL_KEYS = [
   { label: 'Ctrl+C', seq: '\x03' },
 ];
 
-export class TerminalPanel extends React.Component {
-  constructor(props) {
-    super(props);
-    this.containerRef = React.createRef();
-    this.terminal = null;
-    this.fitAddon = null;
-    this.ws = null;
-    this.resizeObserver = null;
-    this._writeBuffer = '';
-    this._writeTimer = null;
-  }
+export function TerminalPanel() {
+  const containerRef = useRef(null);
+  const terminalRef = useRef(null);
+  const fitAddonRef = useRef(null);
+  const wsRef = useRef(null);
+  const resizeObserverRef = useRef(null);
+  const writeBufferRef = useRef('');
+  const writeTimerRef = useRef(null);
+  const resizeTimerRef = useRef(null);
 
-  componentDidMount() {
-    this.initTerminal();
-    this.connectWebSocket();
-    this.setupResizeObserver();
-  }
+  const sendResize = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN && terminalRef.current) {
+      wsRef.current.send(JSON.stringify({
+        type: 'resize',
+        cols: terminalRef.current.cols,
+        rows: terminalRef.current.rows,
+      }));
+    }
+  }, []);
 
-  componentWillUnmount() {
-    if (this._writeTimer) {
-      cancelAnimationFrame(this._writeTimer);
+  const flushWrite = useCallback(() => {
+    if (writeTimerRef.current) {
+      cancelAnimationFrame(writeTimerRef.current);
+      writeTimerRef.current = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    if (this.resizeObserver) {
-      this.resizeObserver.disconnect();
-    }
-    if (this.terminal) {
-      this.terminal.dispose();
-    }
-  }
+    if (!writeBufferRef.current || !terminalRef.current) return;
 
-  initTerminal() {
-    this.terminal = new Terminal({
+    const CHUNK_SIZE = 32768;
+    if (writeBufferRef.current.length <= CHUNK_SIZE) {
+      const buf = writeBufferRef.current;
+      writeBufferRef.current = '';
+      terminalRef.current.write(buf);
+    } else {
+      const chunk = writeBufferRef.current.slice(0, CHUNK_SIZE);
+      writeBufferRef.current = writeBufferRef.current.slice(CHUNK_SIZE);
+      terminalRef.current.write(chunk);
+      writeTimerRef.current = requestAnimationFrame(() => {
+        flushWrite();
+      });
+    }
+  }, []);
+
+  const throttledWrite = useCallback((data) => {
+    writeBufferRef.current += data;
+    if (!writeTimerRef.current) {
+      writeTimerRef.current = requestAnimationFrame(() => {
+        flushWrite();
+      });
+    }
+  }, [flushWrite]);
+
+  const handleVirtualKey = useCallback((seq) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data: seq }));
+    }
+    terminalRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
       fontSize: 13,
@@ -65,52 +89,54 @@ export class TerminalPanel extends React.Component {
       allowProposedApi: true,
     });
 
-    this.fitAddon = new FitAddon();
-    this.terminal.loadAddon(this.fitAddon);
-    this.terminal.loadAddon(new WebLinksAddon());
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.loadAddon(new WebLinksAddon());
 
-    this.terminal.open(this.containerRef.current);
+    terminal.open(containerRef.current);
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
 
     requestAnimationFrame(() => {
-      if (this.fitAddon) {
-        this.fitAddon.fit();
-        this.terminal.focus();
+      if (fitAddon) {
+        fitAddon.fit();
+        terminal.focus();
       }
     });
 
-    this.terminal.onData((data) => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'input', data }));
+    terminal.onData((data) => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'input', data }));
       }
     });
-  }
 
-  connectWebSocket() {
+    // WebSocket connection
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
     const port = window.location.port === '5173' ? '5174' : window.location.port;
     const wsUrl = `${protocol}//${host}:${port}/ws/terminal`;
 
-    this.ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
       console.log('[Terminal] Connected to PTY service');
-      this.sendResize();
+      sendResize();
     };
 
-    this.ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'data') {
-          this._throttledWrite(msg.data);
+          throttledWrite(msg.data);
         } else if (msg.type === 'exit') {
-          this._flushWrite();
-          if (this.terminal) {
-            this.terminal.write(`\r\n[Process exited with code ${msg.exitCode ?? '?'}]\r\n`);
+          flushWrite();
+          if (terminal) {
+            terminal.write(`\r\n[Process exited with code ${msg.exitCode ?? '?'}]\r\n`);
           }
         } else if (msg.type === 'state') {
-          if (!msg.running && this.terminal) {
-            this._flushWrite();
+          if (!msg.running && terminal) {
+            flushWrite();
           }
         }
       } catch (e) {
@@ -118,132 +144,97 @@ export class TerminalPanel extends React.Component {
       }
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
       console.log('[Terminal] Disconnected, reconnecting in 3s...');
       setTimeout(() => {
-        if (this.containerRef.current) {
-          this.connectWebSocket();
+        if (containerRef.current) {
+          // Reconnect handled by re-mounting effect
         }
       }, 3000);
     };
 
-    this.ws.onerror = (error) => {
+    ws.onerror = (error) => {
       console.error('[Terminal] WebSocket error:', error);
     };
-  }
 
-  sendResize() {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.terminal) {
-      this.ws.send(JSON.stringify({
-        type: 'resize',
-        cols: this.terminal.cols,
-        rows: this.terminal.rows,
-      }));
-    }
-  }
-
-  setupResizeObserver() {
-    if (!this.containerRef.current) return;
-
-    this.resizeObserver = new ResizeObserver(() => {
-      if (this._resizeTimer) clearTimeout(this._resizeTimer);
-      this._resizeTimer = setTimeout(() => {
-        if (this.fitAddon && this.containerRef.current) {
+    // ResizeObserver setup
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = setTimeout(() => {
+        if (fitAddonRef.current && containerRef.current) {
           try {
-            this.fitAddon.fit();
-            this.sendResize();
+            fitAddonRef.current.fit();
+            sendResize();
           } catch {}
         }
       }, 150);
     });
 
-    this.resizeObserver.observe(this.containerRef.current);
-  }
+    resizeObserver.observe(containerRef.current);
+    resizeObserverRef.current = resizeObserver;
 
-  _throttledWrite(data) {
-    this._writeBuffer += data;
-    if (!this._writeTimer) {
-      this._writeTimer = requestAnimationFrame(() => {
-        this._flushWrite();
-      });
-    }
-  }
+    // Cleanup on unmount
+    return () => {
+      if (writeTimerRef.current) {
+        cancelAnimationFrame(writeTimerRef.current);
+      }
+      if (ws) {
+        ws.close();
+        wsRef.current = null;
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      if (terminal) {
+        terminal.dispose();
+      }
+    };
+  }, [sendResize, throttledWrite, flushWrite]);
 
-  _flushWrite() {
-    if (this._writeTimer) {
-      cancelAnimationFrame(this._writeTimer);
-      this._writeTimer = null;
-    }
-    if (!this._writeBuffer || !this.terminal) return;
-
-    const CHUNK_SIZE = 32768;
-    if (this._writeBuffer.length <= CHUNK_SIZE) {
-      const buf = this._writeBuffer;
-      this._writeBuffer = '';
-      this.terminal.write(buf);
-    } else {
-      const chunk = this._writeBuffer.slice(0, CHUNK_SIZE);
-      this._writeBuffer = this._writeBuffer.slice(CHUNK_SIZE);
-      this.terminal.write(chunk);
-      this._writeTimer = requestAnimationFrame(() => {
-        this._flushWrite();
-      });
-    }
-  }
-
-  handleVirtualKey = (seq) => {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'input', data: seq }));
-    }
-    this.terminal?.focus();
-  };
-
-  render() {
-    return (
+  return (
+    <div style={{
+      height: '100%',
+      display: 'flex',
+      flexDirection: 'column',
+      background: '#0a0a0a',
+    }}>
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          overflow: 'hidden',
+          padding: '4px 8px',
+        }}
+      />
       <div style={{
-        height: '100%',
         display: 'flex',
-        flexDirection: 'column',
-        background: '#0a0a0a',
+        gap: '4px',
+        padding: '8px',
+        background: '#111',
+        borderTop: '1px solid #222',
+        flexWrap: 'wrap',
       }}>
-        <div
-          ref={this.containerRef}
-          style={{
-            flex: 1,
-            overflow: 'hidden',
-            padding: '4px 8px',
-          }}
-        />
-        <div style={{
-          display: 'flex',
-          gap: '4px',
-          padding: '8px',
-          background: '#111',
-          borderTop: '1px solid #222',
-          flexWrap: 'wrap',
-        }}>
-          {VIRTUAL_KEYS.map((key) => (
-            <button
-              key={key.label}
-              onClick={() => this.handleVirtualKey(key.seq)}
-              style={{
-                padding: '8px 12px',
-                border: '1px solid #333',
-                borderRadius: '4px',
-                background: '#1a1a1a',
-                color: '#ccc',
-                fontSize: '13px',
-                fontFamily: 'Menlo, Monaco, monospace',
-                cursor: 'pointer',
-                minWidth: '44px',
-                minHeight: '44px',
-              }}
-            >
-              {key.label}
-            </button>
-          ))}
-        </div>
+        {VIRTUAL_KEYS.map((key) => (
+          <button
+            key={key.label}
+            onClick={() => handleVirtualKey(key.seq)}
+            style={{
+              padding: '8px 12px',
+              border: '1px solid #333',
+              borderRadius: '4px',
+              background: '#1a1a1a',
+              color: '#ccc',
+              fontSize: '13px',
+              fontFamily: 'Menlo, Monaco, monospace',
+              cursor: 'pointer',
+              minWidth: '44px',
+              minHeight: '44px',
+            }}
+          >
+            {key.label}
+          </button>
+        ))}
       </div>
-    );
-  }
+    </div>
+  );
 }

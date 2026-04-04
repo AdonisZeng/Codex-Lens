@@ -1,6 +1,6 @@
-import React, { useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { EditorView, Decoration, ViewPlugin, ViewUpdate } from '@codemirror/view';
+import { EditorView, Decoration, ViewPlugin } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { RangeSetBuilder } from '@codemirror/state';

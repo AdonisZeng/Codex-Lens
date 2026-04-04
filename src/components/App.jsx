@@ -13,6 +13,14 @@ export function App() {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [projectName, setProjectName] = useState('');
   const [saving, setSaving] = useState(false);
+  const [gitInfo, setGitInfo] = useState({
+    isRepo: false,
+    branch: null,
+    status: null,
+    stagedCount: 0,
+    unstagedCount: 0
+  });
+  const [showStagedPanel, setShowStagedPanel] = useState(false);
   const wsRef = useRef(null);
 
   useEffect(() => {
@@ -122,12 +130,39 @@ export function App() {
       case 'file_content':
         openFileInTab(msg.data);
         break;
+      case 'git_status':
+        setGitInfo({
+          isRepo: msg.data.isRepo,
+          branch: msg.data.branch,
+          status: msg.data.status,
+          stagedCount: msg.data.stagedCount,
+          unstagedCount: msg.data.unstagedCount
+        });
+        break;
       case 'connected':
         console.log('Server confirmed connection');
         break;
       default:
         console.log('Unknown message type:', msg.type);
     }
+  }
+
+  function sendGitCommand(type, payload) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type, ...payload }));
+    }
+  }
+
+  function handleStage(path) {
+    sendGitCommand('git_stage', { filePath: path });
+  }
+
+  function handleUnstage(path) {
+    sendGitCommand('git_unstage', { filePath: path });
+  }
+
+  function handleCommit(message) {
+    sendGitCommand('git_commit', { message });
   }
 
   function openFileInTab(data) {
@@ -380,6 +415,30 @@ export function App() {
           <span className="top-bar-title">当前工作区: {projectName}</span>
         </div>
         <div className="top-bar-center">
+          {gitInfo.isRepo && (
+            <div className="git-status-bar">
+              <span className="git-branch">
+                <span className="git-branch-icon">⎇</span>
+                {gitInfo.branch || 'main'}
+              </span>
+              <div className="git-stats">
+                <span className="git-staged" title="已暂存">
+                  <span className="git-staged-count">{gitInfo.stagedCount}</span>
+                  <span className="git-staged-label">已暂存</span>
+                </span>
+                <span className="git-unstaged" title="未暂存">
+                  <span className="git-unstaged-count">{gitInfo.unstagedCount}</span>
+                  <span className="git-unstaged-label">未暂存</span>
+                </span>
+              </div>
+              <button
+                className="git-changes-btn"
+                onClick={() => setShowStagedPanel(!showStagedPanel)}
+              >
+                {showStagedPanel ? '隐藏变更' : '查看变更'}
+              </button>
+            </div>
+          )}
           <button className="task-btn task-btn-clear" onClick={clearAllDiff} title="清空所有 diff 显示">
             清空 diff
           </button>
@@ -402,6 +461,7 @@ export function App() {
           files={files}
           activeFile={activeTab?.path || null}
           onFileClick={handleFileClick}
+          gitInfo={gitInfo}
         />
         <div className="panel middle-panel">
           <TabBar
@@ -453,6 +513,15 @@ export function App() {
               saveAllFiles();
               setContextMenu(null);
             }}
+          />
+        )}
+        {showStagedPanel && gitInfo.isRepo && (
+          <StagedChangesPanel
+            gitInfo={gitInfo}
+            onStage={handleStage}
+            onUnstage={handleUnstage}
+            onCommit={handleCommit}
+            onClose={() => setShowStagedPanel(false)}
           />
         )}
         <div className="panel right-panel">
@@ -516,7 +585,93 @@ function ContextMenu({ x, y, tab, tabs, saving, onClose, onCloseTab, onCloseOthe
   );
 }
 
-function LeftPanel({ files, activeFile, onFileClick }) {
+function StagedChangesPanel({ gitInfo, onStage, onUnstage, onCommit, onClose }) {
+  if (!gitInfo.isRepo || !gitInfo.status) return null;
+
+  const { staged, unstaged, untracked } = gitInfo.status;
+
+  return (
+    <div className="staged-changes-panel">
+      <div className="staged-panel-header">
+        <span>Git 变更</span>
+        <div className="staged-panel-actions">
+          <button onClick={() => onStage(null)} className="stage-btn">Stage All</button>
+          <button onClick={() => onUnstage(null)} className="unstage-btn">Unstage All</button>
+          <button onClick={onClose} className="close-btn">×</button>
+        </div>
+      </div>
+
+      {staged?.length > 0 && (
+        <div className="changes-section">
+          <div className="changes-section-header">
+            <span className="changes-section-title">已暂存 ({staged.length})</span>
+          </div>
+          <div className="changes-list">
+            {staged.map((file, i) => (
+              <div key={i} className="change-item staged" onClick={() => onUnstage(file.path)}>
+                <span className="change-icon">✓</span>
+                <span className={`change-status ${file.indexStatus}`}>{file.indexStatus}</span>
+                <span className="change-path">{file.path}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {unstaged?.length > 0 && (
+        <div className="changes-section">
+          <div className="changes-section-header">
+            <span className="changes-section-title">未暂存修改 ({unstaged.length})</span>
+          </div>
+          <div className="changes-list">
+            {unstaged.map((file, i) => (
+              <div key={i} className="change-item" onClick={() => onStage(file.path)}>
+                <span className="change-icon">○</span>
+                <span className={`change-status ${file.workTreeStatus}`}>{file.workTreeStatus}</span>
+                <span className="change-path">{file.path}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {untracked?.length > 0 && (
+        <div className="changes-section">
+          <div className="changes-section-header">
+            <span className="changes-section-title">未跟踪 ({untracked.length})</span>
+          </div>
+          <div className="changes-list">
+            {untracked.map((file, i) => (
+              <div key={i} className="change-item untracked" onClick={() => onStage(file.path)}>
+                <span className="change-icon">?</span>
+                <span className="change-status">?</span>
+                <span className="change-path">{file.path}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {((!staged?.length) && (!unstaged?.length) && (!untracked?.length)) && (
+        <div className="no-changes">无变更</div>
+      )}
+
+      {staged?.length > 0 && (
+        <div className="commit-section">
+          <input type="text" className="commit-input" placeholder="提交信息..." id="commit-message" />
+          <button className="commit-btn" onClick={() => {
+            const msg = document.getElementById('commit-message')?.value;
+            if (msg) onCommit(msg);
+          }}>
+            Commit
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LeftPanel({ files, activeFile, onFileClick, gitInfo }) {
   const [expandedDirs, setExpandedDirs] = useState({});
   const [contextMenu, setContextMenu] = useState(null);
 
@@ -567,6 +722,14 @@ function LeftPanel({ files, activeFile, onFileClick }) {
       const isExpanded = expandedDirs[item.path];
       const indent = 8 + depth * 16;
 
+      // Get file git status
+      let fileGitStatus = null;
+      if (!isDir && gitInfo.status) {
+        fileGitStatus = gitInfo.status.staged?.find(f => f.path === item.path) ||
+                       gitInfo.status.unstaged?.find(f => f.path === item.path) ||
+                       gitInfo.status.untracked?.find(f => f.path === item.path);
+      }
+
       return (
         <React.Fragment key={item.path}>
           <div
@@ -580,6 +743,11 @@ function LeftPanel({ files, activeFile, onFileClick }) {
               {isDir ? (isExpanded ? '📂' : '📁') : getFileIcon(item.type)}
             </span>
             <span className="file-name">{item.name}</span>
+            {fileGitStatus && (
+              <span className={`file-git-badge ${getGitBadgeClass(fileGitStatus)}`}>
+                {getGitBadgeText(fileGitStatus)}
+              </span>
+            )}
           </div>
           {isDir && isExpanded && item.children && renderFileTree(item.children, depth + 1)}
         </React.Fragment>
@@ -638,4 +806,29 @@ function getFileIcon(type) {
     'default': '📄'
   };
   return icons[type] || icons['default'];
+}
+
+function getGitBadgeClass(fileGitStatus) {
+  // indexStatus === '?' means untracked
+  if (fileGitStatus.indexStatus === '?' && fileGitStatus.workTreeStatus === '?') {
+    return 'untracked';
+  }
+  // Staged: indexStatus is not ' ' and not '?'
+  if (fileGitStatus.indexStatus !== ' ' && fileGitStatus.indexStatus !== '?') {
+    return 'staged';
+  }
+  // Otherwise (working tree changes)
+  return 'wt';
+}
+
+function getGitBadgeText(fileGitStatus) {
+  // For untracked, show 'U'
+  if (fileGitStatus.indexStatus === '?' && fileGitStatus.workTreeStatus === '?') {
+    return 'U';
+  }
+  // Show index status for staged, workTree status for unstaged
+  if (fileGitStatus.indexStatus !== ' ' && fileGitStatus.indexStatus !== '?') {
+    return fileGitStatus.indexStatus;
+  }
+  return fileGitStatus.workTreeStatus;
 }

@@ -1,5 +1,4 @@
 import { createServer } from 'http';
-import { createHash, createHash as cryptoCreateHash } from 'crypto';
 import { WebSocketServer } from 'ws';
 import express from 'express';
 import { spawn } from 'child_process';
@@ -7,6 +6,7 @@ import { createProxyServer } from './proxy.js';
 import { FileWatcher, scanDirectory } from './watcher.js';
 import { createLogger } from './lib/logger.js';
 import { spawnCodex, writeToPty, resizePty, killPty, onPtyData, onPtyExit, getPtyState, getOutputBuffer } from './pty-manager.js';
+import { createGitManager } from './git-manager.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
@@ -56,6 +56,7 @@ class Aggregator {
     this.proxyServer = null;
     this.fileWatcher = null;
     this.ptyProcess = null;
+    this.gitManager = null;
   }
 
   async start(proxyPort) {
@@ -158,19 +159,37 @@ class Aggregator {
     this.fileWatcher = new FileWatcher(this.projectRoot, (event) => this.broadcast(event));
     await this.fileWatcher.start();
 
+    // Initialize Git Manager
+    this.gitManager = createGitManager(this.projectRoot, (event) => this.broadcast(event));
+    if (this.gitManager.isGitRepo()) {
+      await this.gitManager.broadcastUpdate();
+      logger.info('Git repository detected, git status broadcasting enabled');
+      // Set up git status update trigger on file changes
+      this.fileWatcher.setGitStatusCallback((filePath) => {
+        if (this.gitManager?.isGitRepo()) {
+          this.gitManager.scheduleStatusUpdate();
+        }
+      });
+    }
+
     await this.startCodex(proxyPort);
 
     return { httpPort: HTTP_PORT, proxyPort };
   }
 
   setupMainWebSocket() {
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', async (ws) => {
       logger.info('API client connected');
       this.clients.add(ws);
 
       const fileTree = scanDirectory(this.projectRoot);
       logger.info(`Sending file_tree with ${fileTree.length} top-level items`);
       ws.send(JSON.stringify({ type: 'file_tree', data: fileTree }));
+
+      // Send initial git status if available
+      if (this.gitManager?.isGitRepo()) {
+        await this.gitManager.broadcastUpdate();
+      }
 
       ws.on('close', () => {
         logger.info('API client disconnected');
@@ -249,7 +268,7 @@ class Aggregator {
     }
   }
 
-  handleClientMessage(data, ws) {
+  async handleClientMessage(data, ws) {
     if (data.type === 'user_message') {
       writeToPty(data.data + '\r');
     } else if (data.type === 'open_file') {
@@ -266,6 +285,33 @@ class Aggregator {
             extension
           }
         }));
+      }
+    } else if (data.type === 'git_status_request') {
+      if (this.gitManager?.isGitRepo()) {
+        this.gitManager.broadcastUpdate();
+      }
+    } else if (data.type === 'git_stage') {
+      if (this.gitManager?.isGitRepo()) {
+        if (data.filePath) {
+          await this.gitManager.stageFile(data.filePath);
+        } else {
+          await this.gitManager.stageAll();
+        }
+        this.gitManager.broadcastUpdate();
+      }
+    } else if (data.type === 'git_unstage') {
+      if (this.gitManager?.isGitRepo()) {
+        if (data.filePath) {
+          await this.gitManager.unstageFile(data.filePath);
+        } else {
+          await this.gitManager.unstageAll();
+        }
+        this.gitManager.broadcastUpdate();
+      }
+    } else if (data.type === 'git_commit') {
+      if (this.gitManager?.isGitRepo()) {
+        await this.gitManager.commit(data.message);
+        this.gitManager.broadcastUpdate();
       }
     }
   }

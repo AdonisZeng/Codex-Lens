@@ -1,6 +1,6 @@
 {
   "name": "codex-lens",
-  "version": "0.1.27",
+  "version": "0.1.35",
   "description": "A visualization tool for Codex that monitors API requests and file system changes",
   "license": "MIT",
   "type": "module",

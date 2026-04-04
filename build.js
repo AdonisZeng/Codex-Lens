@@ -20,6 +20,7 @@ async function buildAll() {
     'src/aggregator.js',
     'src/watcher.js',
     'src/pty-manager.js',
+    'src/git-manager.js',
     'src/lib/sse-parser.js',
     'src/lib/diff-builder.js',
     'src/lib/log-manager.js',
