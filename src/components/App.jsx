@@ -21,6 +21,9 @@ export function App() {
     unstagedCount: 0
   });
   const [showStagedPanel, setShowStagedPanel] = useState(false);
+  const [gitOperationLoading, setGitOperationLoading] = useState(false);
+  const [gitOperationType, setGitOperationType] = useState(null);
+  const [toast, setToast] = useState(null);
   const wsRef = useRef(null);
 
   useEffect(() => {
@@ -139,6 +142,11 @@ export function App() {
           unstagedCount: msg.data.unstagedCount
         });
         break;
+      case 'git_operation_result':
+        setGitOperationLoading(false);
+        setGitOperationType(null);
+        setToast({ type: msg.success ? 'success' : 'error', message: msg.message });
+        break;
       case 'connected':
         console.log('Server confirmed connection');
         break;
@@ -163,6 +171,12 @@ export function App() {
 
   function handleCommit(message) {
     sendGitCommand('git_commit', { message });
+  }
+
+  function handleGitOperation(operationType) {
+    setGitOperationLoading(true);
+    setGitOperationType(operationType);
+    sendGitCommand(`git_${operationType}`, {});
   }
 
   function openFileInTab(data) {
@@ -521,9 +535,15 @@ export function App() {
             onStage={handleStage}
             onUnstage={handleUnstage}
             onCommit={handleCommit}
+            onPush={() => handleGitOperation('push')}
+            onPull={() => handleGitOperation('pull')}
+            onFetch={() => handleGitOperation('fetch')}
+            operationLoading={gitOperationLoading}
+            operationType={gitOperationType}
             onClose={() => setShowStagedPanel(false)}
           />
         )}
+        <Toast toast={toast} onClose={() => setToast(null)} />
         <div className="panel right-panel">
           <div className="terminal-wrapper">
             <TerminalPanel />
@@ -585,7 +605,28 @@ function ContextMenu({ x, y, tab, tabs, saving, onClose, onCloseTab, onCloseOthe
   );
 }
 
-function StagedChangesPanel({ gitInfo, onStage, onUnstage, onCommit, onClose }) {
+function Toast({ toast, onClose }) {
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (toast) {
+      timerRef.current = setTimeout(onClose, 4000);
+    }
+    return () => clearTimeout(timerRef.current);
+  }, [toast, onClose]);
+
+  if (!toast) return null;
+
+  return (
+    <div className={`toast toast-${toast.type}`}>
+      <span className="toast-icon">{toast.type === 'success' ? '✓' : '✗'}</span>
+      <span className="toast-message">{toast.message}</span>
+      <button className="toast-close" onClick={onClose}>×</button>
+    </div>
+  );
+}
+
+function StagedChangesPanel({ gitInfo, onStage, onUnstage, onCommit, onPush, onPull, onFetch, operationLoading, operationType, onClose }) {
   if (!gitInfo.isRepo || !gitInfo.status) return null;
 
   const { staged, unstaged, untracked } = gitInfo.status;
@@ -595,6 +636,16 @@ function StagedChangesPanel({ gitInfo, onStage, onUnstage, onCommit, onClose }) 
       <div className="staged-panel-header">
         <span>Git 变更</span>
         <div className="staged-panel-actions">
+          <button onClick={onFetch} className="git-action-btn" disabled={operationLoading} title="Fetch from remote">
+            {operationLoading && operationType === 'fetch' ? '...' : 'Fetch'}
+          </button>
+          <button onClick={onPull} className="git-action-btn" disabled={operationLoading} title="Pull from remote">
+            {operationLoading && operationType === 'pull' ? '...' : 'Pull'}
+          </button>
+          <button onClick={onPush} className="git-action-btn git-push-btn" disabled={operationLoading} title="Push to remote">
+            {operationLoading && operationType === 'push' ? '...' : 'Push'}
+          </button>
+          <span className="panel-divider"></span>
           <button onClick={() => onStage(null)} className="stage-btn">Stage All</button>
           <button onClick={() => onUnstage(null)} className="unstage-btn">Unstage All</button>
           <button onClick={onClose} className="close-btn">×</button>

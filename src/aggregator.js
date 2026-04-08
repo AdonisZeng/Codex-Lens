@@ -313,6 +313,27 @@ class Aggregator {
         await this.gitManager.commit(data.message);
         this.gitManager.broadcastUpdate();
       }
+    } else if (data.type === 'git_push') {
+      if (this.gitManager?.isGitRepo()) {
+        const result = await this.gitManager.push();
+        this.broadcast({ type: 'git_operation_result', operation: 'push', success: result.success, message: result.message });
+        if (result.success) {
+          this.gitManager.broadcastUpdate();
+        }
+      }
+    } else if (data.type === 'git_pull') {
+      if (this.gitManager?.isGitRepo()) {
+        const result = await this.gitManager.pull();
+        this.broadcast({ type: 'git_operation_result', operation: 'pull', success: result.success, message: result.message });
+        if (result.success) {
+          this.gitManager.broadcastUpdate();
+        }
+      }
+    } else if (data.type === 'git_fetch') {
+      if (this.gitManager?.isGitRepo()) {
+        const result = await this.gitManager.fetch();
+        this.broadcast({ type: 'git_operation_result', operation: 'fetch', success: result.success, message: result.message });
+      }
     }
   }
 

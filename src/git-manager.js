@@ -138,6 +138,18 @@ class GitManager {
     return this.getStatus();
   }
 
+  async runRemoteOperation(operation, args, successMsg) {
+    const result = await this.runGitCommand(args);
+    return {
+      success: result.code === 0,
+      message: result.code === 0 ? successMsg : (result.stderr || `${operation} 失败`),
+    };
+  }
+
+  async push() { return this.runRemoteOperation('Push', ['push'], 'Push 成功'); }
+  async pull() { return this.runRemoteOperation('Pull', ['pull'], 'Pull 成功'); }
+  async fetch() { return this.runRemoteOperation('Fetch', ['fetch', '--all'], 'Fetch 成功'); }
+
   async broadcastUpdate() {
     const branch = await this.getCurrentBranch();
     const status = await this.getStatus();
